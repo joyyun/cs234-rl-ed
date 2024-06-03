@@ -1,0 +1,719 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+```{r}
+library(DiagrammeR)
+library(grf)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(rlearner)
+```
+```{r}
+data <- read.csv("./session_df.csv")
+nrow(data)
+data %>% 
+  group_by(arm_name) %>% 
+  summarise(Count = n())
+
+data %>%
+  group_by(arm_name) %>%
+  summarise(Number_of_Series = n_distinct(series_uuid))
+
+series_data <- data %>% 
+  summarise(Number_of_Series = n_distinct(series_uuid))
+
+series_data
+```
+```{r}
+# Count all nan values across columns
+nrow(data)
+data %>%
+  dplyr::summarise(across(everything(), ~sum(is.na(.)) / n() * 100)) %>%
+  tidyr::pivot_longer(everything(), names_to = "Column", values_to = "Percentage") %>%
+  knitr::kable(format = "html", caption = "Percentage of NaN Values by Column")
+
+
+data %>%
+  group_by(series_uuid) %>%
+  summarise(
+    count = n(),
+  ) %>%
+    arrange(desc(count))
+  
+```
+
+## Pre-process the data
+
+# Filter rows
+```{r}
+# Filter for nan in average_uptake
+data_filtered <- data %>% filter(!is.na(average_uptake))
+
+# Filter for arm_names
+data_filtered <- data_filtered %>% filter(!(arm_name %in% c("", "Tutor Feedback - Exclude", "Tutor Feedback - Exclude (Full)")))
+
+# Filter for sessions with session_duration below 15
+data_filtered <- data_filtered %>% filter(session_duration >= 15)
+
+# Filter for sessions with attendance_count equal to zero
+data_filtered <- data_filtered %>% filter(attendance_count > 0)
+
+# Filter for sessions with nan cohort ratings
+data_filtered <- data_filtered %>% filter(!is.na(cohort_rating)) # this one is debatable. Maybe impute the mean
+
+# Fill nan values with zeros for 'length_utterance_tutor_chat_avg', 'length_utterance_student_chat_avg', 'length_utterance_student_avg', 'length_utterance_tutor_avg'
+initial_data_filtered <- data_filtered %>%
+  mutate(
+    length_utterance_tutor_chat_avg = ifelse(is.na(length_utterance_tutor_chat_avg), 0, length_utterance_tutor_chat_avg),
+    length_utterance_student_chat_avg = ifelse(is.na(length_utterance_student_chat_avg), 0, length_utterance_student_chat_avg),
+    length_utterance_student_avg = ifelse(is.na(length_utterance_student_avg), 0, length_utterance_student_avg),
+    length_utterance_tutor_avg = ifelse(is.na(length_utterance_tutor_avg), 0, length_utterance_tutor_avg),
+  )
+nrow(initial_data_filtered)
+
+# Count nan values across columns again
+initial_data_filtered %>%
+  dplyr::summarise(across(everything(), ~sum(is.na(.)) / n() * 100)) %>%
+  tidyr::pivot_longer(everything(), names_to = "Column", values_to = "Percentage") %>%
+  knitr::kable(format = "html", caption = "Percentage of NaN Values by Column")
+
+initial_data_filtered %>% 
+  group_by(arm_name) %>% 
+  summarise(Count = n())
+
+initial_data_filtered %>%
+  group_by(arm_name) %>%
+  summarise(Number_of_Series = n_distinct(series_uuid))
+
+initial_data_filtered %>% 
+  summarise(Number_of_Series = n_distinct(series_uuid))
+
+```
+# We will get rid of demographic information for now
+```{r}
+# We keep these summarize functions for later
+# backed_up_data <- grouped_data %>%
+#  summarise(
+#    is_tutor_He_Him = last(is_tutor_He_Him), 
+#    is_tutor_She_Her = last(is_tutor_She_Her), 
+#    is_tutor_She_They = last(is_tutor_She_They), 
+#    is_tutor_They_Them = last(is_tutor_They_Them),
+#    tutor_asian_percent = last(tutor_asian_percent),
+#    tutor_median_income = last(tutor_median_income),
+#    tutor_other_percent = last(tutor_other_percent),
+#    tutor_white_percent = last(tutor_white_percent),
+#    tutor_hispanic_percent = last(tutor_hispanic_percent),
+#    tutor_american_indian_percent = last(tutor_american_indian_percent),
+#    tutor_african_american_percent = last(tutor_african_american_percent),
+#    tutor_pacific_islander_percent = last(tutor_pacific_islander_percent),
+    
+    # Mean values for student-related columns
+#    student_He_Him_ratio = mean(student_He_Him_ratio, na.rm = TRUE),
+#    student_He_They_ratio = mean(student_He_They_ratio, na.rm = TRUE),
+#    student_She_Her_ratio = mean(student_She_Her_ratio, na.rm = TRUE),
+#    student_She_They_ratio = mean(student_She_They_ratio, na.rm = TRUE),
+#    student_They_Them_ratio = mean(student_They_Them_ratio, na.rm = TRUE),
+#    cohort_median_income = mean(cohort_median_income, na.rm = TRUE),
+#    cohort_asian_percent = mean(cohort_asian_percent, na.rm = TRUE),
+#    cohort_other_percent = mean(cohort_other_percent, na.rm = TRUE),
+#    cohort_white_percent = mean(cohort_white_percent, na.rm = TRUE),
+#    cohort_hispanic_percent = mean(cohort_hispanic_percent, na.rm = TRUE),
+#    cohort_american_indian_percent = mean(cohort_american_indian_percent, na.rm = TRUE),
+#    cohort_african_american_percent = mean(cohort_african_american_percent, na.rm = TRUE),
+#    cohort_pacific_islander_percent = mean(cohort_pacific_islander_percent, na.rm = TRUE)
+ # )
+```
+
+# Count the number of series that have missing sessions and then temporarily filter for series that do not have all of them
+```{r}
+data_filtered <- initial_data_filtered %>%
+  arrange(series_uuid, session_count)
+
+# Create a list of unique series_uuid and the session counts associated with each
+series_sessions <- data_filtered %>%
+  group_by(series_uuid) %>%
+  summarise(session_counts = list(unique(session_count))) %>%
+  ungroup()
+
+# Initialize a vector to store counts of missing sessions for each session_count from 1 to 8
+missing_sessions_counts <- integer(8)
+
+# Loop through each session_count from 1 to 8
+for (i in 1:8) {
+  # Count how many series are missing this specific session_count
+  missing_sessions_counts[i] <- sum(sapply(series_sessions$session_counts, function(x) !i %in% x))
+}
+
+# Print the result
+names(missing_sessions_counts) <- paste("Missing Session", 1:8)
+print(missing_sessions_counts)
+
+
+# Temporarily filter for non complete series
+# Group data by series_uuid
+complete_series <- data_filtered %>%
+  group_by(series_uuid) %>%
+  # Ensure that each session_count within a series is unique
+  filter(n_distinct(session_count) >= 6) %>%
+  ungroup()
+
+# No filtering for complete series
+# complete_series <- data_filtered                                  #ADD OR NOT
+
+nrow(complete_series)
+
+# Count nan values across columns again
+complete_series %>%
+  dplyr::summarise(across(everything(), ~sum(is.na(.)) / n() * 100)) %>%
+  tidyr::pivot_longer(everything(), names_to = "Column", values_to = "Percentage") %>%
+  knitr::kable(format = "html", caption = "Percentage of NaN Values by Column")
+
+
+complete_series %>% 
+  group_by(arm_name) %>% 
+  summarise(Count = n())
+
+complete_series %>%
+  group_by(arm_name) %>%
+  summarise(Number_of_Series = n_distinct(series_uuid))
+
+complete_series %>% 
+  summarise(Number_of_Series = n_distinct(series_uuid))
+```
+
+
+# Count the number of series that do not have percentage grades for sessions 1, 2, 3, 4, 7
+```{r}
+# Now count the number of series that do not have a cohort_percentage_grade for session with session_count = 1, 2, 3, 4, and 7
+counts_list <- lapply(c(1, 2, 3, 4, 7), function(session_number) {
+  complete_series %>%
+    filter(session_count == session_number) %>%
+    filter(is.na(cohort_percentage_grade)) %>%
+    summarise(number_of_series = n_distinct(series_uuid)) %>%
+    mutate(session_count = session_number)
+})
+
+# Combine the results into a single data frame
+results <- bind_rows(counts_list)
+
+# Print the results
+print(results)
+```
+
+
+# Now filter for series that do not have all sessions 1,2,3,4,7 with percentage_grades
+```{r}
+# Define session counts of interest
+session_counts_of_interest <- c(1, 2, 3, 4, 7)
+
+# Step 1: Create a list to hold data frames for each session count
+sessions_data_list <- lapply(session_counts_of_interest, function(sc) {
+  complete_series %>%
+    filter(session_count == sc) %>%
+    # Ensure there's a non-missing cohort_percentage_grade for the session
+    filter(!is.na(cohort_percentage_grade)) %>%
+    distinct(series_uuid) # Keep unique series_uuid for each session
+})
+
+# Step 2: Identify series with all required session counts having a non-missing grade
+series_with_all_grades <- Reduce(intersect, sessions_data_list)
+
+series_with_all_grades <- unlist(series_with_all_grades)
+
+# Step 3: Filter the original dataset for these series
+complete_series_data <- complete_series %>%
+  filter(series_uuid %in% series_with_all_grades)
+
+# No filtering
+# complete_series_data <- complete_series               #ADD OR NOT
+
+nrow(complete_series_data)
+
+# Count nan values across columns again
+complete_series_data %>%
+  dplyr::summarise(across(everything(), ~sum(is.na(.)) / n() * 100)) %>%
+  tidyr::pivot_longer(everything(), names_to = "Column", values_to = "Percentage") %>%
+  knitr::kable(format = "html", caption = "Percentage of NaN Values by Column")
+
+
+complete_series_data %>% 
+  group_by(arm_name) %>% 
+  summarise(Count = n())
+
+complete_series_data %>%
+  group_by(arm_name) %>%
+  summarise(Number_of_Series = n_distinct(series_uuid))
+```
+
+```{r}
+grades_summary_data <- complete_series_data %>%
+  group_by(series_uuid) %>%
+  summarise(
+    grade_for_session_1 = cohort_percentage_grade[session_count == 1],
+    grade_for_session_2 = cohort_percentage_grade[session_count == 2],
+    grade_for_session_3 = cohort_percentage_grade[session_count == 3],
+    grade_for_session_4 = cohort_percentage_grade[session_count == 4],
+    grade_for_session_7 = cohort_percentage_grade[session_count == 7]
+  ) %>%
+  ungroup()
+
+talkmoves_summary_data <- complete_series_data %>%
+  group_by(series_uuid) %>%
+  summarise(
+    uptake_session_1 = average_uptake[session_count == 1],
+    uptake_session_7 = average_uptake[session_count == 7],
+    normalized_num_eliciting_1 = normalized_num_eliciting[session_count == 1],
+    normalized_num_eliciting_7 = normalized_num_eliciting[session_count == 7]
+  ) %>%
+  ungroup()
+
+talkmoves_summary_data %>%
+  dplyr::summarise(across(everything(), ~sum(is.na(.)) / n() * 100)) %>%
+  tidyr::pivot_longer(everything(), names_to = "Column", values_to = "Percentage") %>%
+  knitr::kable(format = "html", caption = "Percentage of NaN Values by Column")
+
+grades_summary_data %>%
+  dplyr::summarise(across(everything(), ~sum(is.na(.)) / n() * 100)) %>%
+  tidyr::pivot_longer(everything(), names_to = "Column", values_to = "Percentage") %>%
+  knitr::kable(format = "html", caption = "Percentage of NaN Values by Column")
+```
+
+# Aggregation
+
+```{r}
+general_summary_data <- complete_series_data %>%
+  group_by(series_uuid) %>%
+  summarise(
+    # session_count = n(), # Count of rows in each group
+    # unique_tutors = n_distinct(tutor_uuid), # Count of unique tutors: just a sanity check, it should be equal to one
+    average_attendance = mean(attendance_count), # Average attendance
+    average_rating = mean(cohort_rating),
+    average_session_duration = mean(session_duration),
+    average_talktime_tutor_pct = mean(talktime_tutor_pct),
+    average_spoken_token_tutor_pct = mean(spoken_token_tutor_pct),
+    average_chat_token_tutor_pct = mean(chat_token_tutor_pct),
+    average_length_utterance_tutor = mean(length_utterance_tutor_avg),
+    average_length_utterance_student = mean(length_utterance_student_avg),
+    average_length_utterance_tutor_chat = mean(length_utterance_tutor_chat_avg),
+    average_length_utterance_student_chat = mean(length_utterance_student_chat_avg),
+    average_ratio_students_engaged = mean(ratio_students_engaged),
+    average_normalized_num_student_names_used = mean(normalized_num_student_names_used),
+    average_normalized_num_turns = mean(normalized_num_turns),
+    average_normalized_num_high_uptakes = mean(normalized_num_high_uptakes, na.rm = TRUE),
+    average_normalized_num_eliciting = mean(normalized_num_eliciting, na.rm = TRUE), # Does this remove the row?
+    average_normalized_num_questions_students = mean(normalized_num_questions_students),
+    average_normalized_num_questions_tutor = mean(normalized_num_questions_tutor),
+    average_normalized_student_reasoning = mean(normalized_student_reasoning, na.rm = TRUE),
+    arm_name = first(arm_name),
+    count_acknowledged = sum(is_acknowledged, na.rm = TRUE),
+    count_reflection_share = sum(reflection_share == "True", na.rm = TRUE),
+    count_is_reflected = sum(is_reflected, na.rm = TRUE),
+    min_sat_score_series = last(min_sat_score_series),
+    max_sat_score_series = last(max_sat_score_series),
+    average_uptake = mean(average_uptake, na.rm = TRUE)
+  )
+
+summary_data <- left_join(general_summary_data, grades_summary_data, by = "series_uuid")
+
+summary_data <- left_join(summary_data, talkmoves_summary_data, by = "series_uuid")
+
+# Filter for grade_for_session_7 with nans
+# summary_data <- summary_data %>% #to be removed potentially
+#  filter(!is.na(grade_for_session_7))
+```
+
+
+
+```{r}
+summary(summary_data)
+```
+
+
+
+```{r}
+# Create the outcome variable Y
+summary_data$grade_change <- summary_data$grade_for_session_7 - rowMeans(summary_data[, c("grade_for_session_1", "grade_for_session_2")])
+summary_data$uptake_change <- summary_data$uptake_session_7 -  summary_data$uptake_session_1
+summary_data$eliciting_change <- summary_data$normalized_num_eliciting_7 -  summary_data$normalized_num_eliciting_1
+summary_data <- summary_data %>% filter(!is.na(grade_change))
+summary_data <- summary_data %>% filter(!is.na(uptake_change))
+summary_data <- summary_data %>% filter(!is.na(eliciting_change))
+
+# summary_data <- summary_data %>%
+#  mutate(arm_binary = case_when(
+#    arm_name == "Control" ~ 0,
+#    arm_name == "Tutor Feedback" ~ 1,
+#    arm_name == "Tutor Feedback + Goal-Oriented Learner Feedback" ~ 1,
+#    arm_name == "Tutor Feedback + Socially-Oriented Learner Feedback" ~ 1,
+#    TRUE ~ NA_integer_ # This line handles any unexpected values by assigning NA
+#  ))
+
+
+filtered_summary_data <- summary_data %>%
+  mutate(arm_binary = case_when(
+    arm_name == "Control" ~ 0,
+    arm_name == "Tutor Feedback + Socially-Oriented Learner Feedback" ~ 1,
+    TRUE ~ NA_integer_ # This line handles any unexpected values by assigning NA
+  )) %>%
+  filter(!is.na(arm_binary))
+
+
+# Ensure the treatment variable W is a factor
+filtered_summary_data$W <- as.factor(filtered_summary_data$arm_binary)
+
+
+# Select covariates for X
+# covariates <- c("average_attendance", "average_rating", "average_session_duration",
+    # "average_talktime_tutor_pct", "average_spoken_token_tutor_pct", "average_chat_token_tutor_pct",
+    # "average_length_utterance_tutor", "average_length_utterance_student",
+    # "average_length_utterance_tutor_chat", "average_length_utterance_student_chat",
+    # "average_ratio_students_engaged", "average_normalized_num_student_names_used",
+    # "average_normalized_num_turns", "average_normalized_num_high_uptakes",
+    # "average_normalized_num_eliciting", "average_normalized_num_questions_students",
+    # "average_normalized_num_questions_tutor", "average_normalized_student_reasoning",
+    # "count_acknowledged", "count_reflection_share", "count_is_reflected", "min_sat_score_series",
+    # "max_sat_score_series", "average_uptake", "grade_for_session_1", "grade_for_session_2",
+    # "grade_for_session_3", "grade_for_session_4", "grade_for_session_7")
+covariates <- c("average_attendance", "average_rating",
+    "average_talktime_tutor_pct", "average_spoken_token_tutor_pct",
+    "average_length_utterance_tutor", "average_length_utterance_student",
+    "average_ratio_students_engaged", "average_normalized_num_student_names_used",
+    "average_normalized_num_turns", "average_normalized_num_high_uptakes",
+    "average_normalized_num_eliciting", "average_normalized_num_questions_students",
+    "average_normalized_num_questions_tutor", "average_normalized_student_reasoning",
+    "count_acknowledged", "count_reflection_share", "count_is_reflected", "min_sat_score_series",
+    "max_sat_score_series", "average_uptake", "grade_for_session_1", "grade_for_session_2",
+    "grade_for_session_3", "grade_for_session_4", "grade_for_session_7")
+X <- filtered_summary_data %>%
+  select(
+    all_of(covariates)
+  ) %>% as.matrix()
+
+# Specify Y and W
+Y <- filtered_summary_data$uptake_change
+W <- filtered_summary_data$W
+W_numeric <- as.numeric(as.character(W))
+```
+
+
+```{r}
+tutor_fedback_summary_data <- summary_data %>%
+  filter(arm_name=="Tutor Feedback")
+
+
+Control_summary_data <- summary_data %>%
+  filter(arm_name=="Control")
+
+social_learner_tutor_fedback_summary_data <- summary_data %>%
+  filter(arm_name=="Tutor Feedback + Socially-Oriented Learner Feedback")
+
+goal_learner_tutor_fedback_summary_data <- summary_data %>%
+  filter(arm_name=="Tutor Feedback + Goal-Oriented Learner Feedback")
+
+
+hist(Control_summary_data$uptake_session_7 -  Control_summary_data$uptake_session_1)
+hist(Control_summary_data$grade_for_session_7 -  Control_summary_data$grade_for_session_1)
+hist(Control_summary_data$normalized_num_eliciting_7 -  Control_summary_data$normalized_num_eliciting_1)
+hist(tutor_fedback_summary_data$uptake_session_7 -  tutor_fedback_summary_data$uptake_session_1)
+hist(tutor_fedback_summary_data$grade_for_session_7 -  tutor_fedback_summary_data$grade_for_session_1)
+hist(tutor_fedback_summary_data$normalized_num_eliciting_7 -  tutor_fedback_summary_data$normalized_num_eliciting_1)
+
+cat("CATE at Treatment Group Level\n")
+cat("Uptake\n")
+mean(Control_summary_data$uptake_session_7 -  Control_summary_data$uptake_session_1)
+mean(tutor_fedback_summary_data$uptake_session_7 -  tutor_fedback_summary_data$uptake_session_1) - mean(Control_summary_data$uptake_session_7 -  Control_summary_data$uptake_session_1)
+mean(social_learner_tutor_fedback_summary_data$uptake_session_7 -  social_learner_tutor_fedback_summary_data$uptake_session_1) - mean(Control_summary_data$uptake_session_7 -  Control_summary_data$uptake_session_1)
+mean(goal_learner_tutor_fedback_summary_data$uptake_session_7 -  goal_learner_tutor_fedback_summary_data$uptake_session_1) - mean(Control_summary_data$uptake_session_7 -  Control_summary_data$uptake_session_1)
+
+cat("Eliciting\n")
+mean(Control_summary_data$normalized_num_eliciting_7 -  Control_summary_data$normalized_num_eliciting_1)
+mean(tutor_fedback_summary_data$normalized_num_eliciting_7 -  tutor_fedback_summary_data$normalized_num_eliciting_1) - mean(Control_summary_data$normalized_num_eliciting_7 -  Control_summary_data$normalized_num_eliciting_1)
+mean(social_learner_tutor_fedback_summary_data$normalized_num_eliciting_7 -  social_learner_tutor_fedback_summary_data$normalized_num_eliciting_1) - mean(Control_summary_data$normalized_num_eliciting_7 -  Control_summary_data$normalized_num_eliciting_1)
+mean(goal_learner_tutor_fedback_summary_data$normalized_num_eliciting_7 -  goal_learner_tutor_fedback_summary_data$normalized_num_eliciting_1) - mean(Control_summary_data$normalized_num_eliciting_7 -  Control_summary_data$normalized_num_eliciting_1)
+
+cat("Grade\n")
+mean(Control_summary_data$grade_for_session_7 -  Control_summary_data$grade_for_session_1)
+mean(tutor_fedback_summary_data$grade_for_session_7 -  tutor_fedback_summary_data$grade_for_session_1) - mean(Control_summary_data$grade_for_session_7 -  Control_summary_data$grade_for_session_1)
+mean(social_learner_tutor_fedback_summary_data$grade_for_session_7 -  social_learner_tutor_fedback_summary_data$grade_for_session_1) - mean(Control_summary_data$grade_for_session_7 -  Control_summary_data$grade_for_session_1)
+mean(goal_learner_tutor_fedback_summary_data$grade_for_session_7 -  goal_learner_tutor_fedback_summary_data$grade_for_session_1) - mean(Control_summary_data$grade_for_session_7 -  Control_summary_data$grade_for_session_1)
+
+# cat("ATE of Control\n")
+# mean(Control_summary_data$grade_for_session_7 -  Control_summary_data$grade_for_session_1)
+# mean(Control_summary_data$average_attendance)
+```
+
+
+
+# Last check for nan values
+```{r}
+all_variables <- c(covariates, "Y", "arm_binary")
+
+filtered_summary_data %>% 
+  group_by(arm_name) %>% 
+  summarise(Count = n())
+
+nrow(filtered_summary_data)
+
+# Count nan values across columns again
+filtered_summary_data %>%
+  dplyr::summarise(across(all_of(all_variables), ~sum(is.na(.)) / n() * 100)) %>%
+  tidyr::pivot_longer(everything(), names_to = "Column", values_to = "Percentage") %>%
+  knitr::kable(format = "html", caption = "Percentage of NaN Values by Column")
+```
+
+
+
+```{r}
+
+# rlasso_fit <- rlasso(X, Y, W_numeric)
+# rlasso_est <- predict(rlasso_fit, X)
+
+
+# rlasso_fit
+
+
+cforest <- causal_forest(X, Y, W_numeric)
+# Predicting the treatment effects (optional)
+effects <- predict(cforest, X)
+
+# Print the estimated effects
+print(effects)
+```
+
+
+
+```{r}
+cat("Outcome variable:\n", "uptake_change", "\n\n")
+cat("Treatment Groups:\n", toString(unique(summary_data$arm_name)), "\n\n")
+cat("Covariates:\n")
+covariates
+cat("\nResults:\n")
+cforest
+```
+```{r}
+r_loss <- function(Y, samples, W.orig = NULL, W.hat = NULL, M.hat = NULL, Tau.hat = NULL) {
+  size <- length(samples)
+  if (size == 1) {
+    return(Y[samples[1]]^2)
+  }
+  if (is.null(W.orig)) {
+    unscaled_spread <- sum((Y[samples] - mean(Y[samples]))^2)
+    output <- unscaled_spread * (size^2)/((size - 1)^2)
+  } else {
+    unscaled_spread <- sum((Y[samples] - M.hat[samples] - (W.orig[samples] - W.hat[samples])*mean(Tau.hat[samples]))^2)
+    output <- unscaled_spread * (size^2)/((size - 1)^2)
+  }
+  return(output)
+}
+
+
+get_r_loss <- function(Y, tree, index, cost = 0, prune_info, W.orig = NULL, W.hat = NULL, M.hat = NULL, Tau.hat = NULL) {
+  node <- tree$nodes[[index]]
+  if (node$is_leaf) {
+    # If the node is a leaf, then we just calculate the r_loss and return
+    prune_info[[index]]$is_pruned_leaf <- TRUE
+    prune_info[[index]]$samples <- node$samples
+    node_r_loss <- r_loss(Y, node$samples, W.orig, W.hat, M.hat, Tau.hat)
+    return(list(node_r_loss = node_r_loss, prune_info = prune_info))
+  } else {
+    # If the node is not a leaf, first we get the samples and r_loss of the left child
+    left_leaf <- get_r_loss(Y, tree, node$left_child, cost, prune_info, W.orig, W.hat, M.hat, Tau.hat)
+    new_prune_info <- left_leaf$prune_info
+    left_r_loss <- left_leaf$node_r_loss
+    # Then we get samples and r_loss from the right child
+    right_leaf <- get_r_loss(Y, tree, node$right_child, cost, new_prune_info, W.orig, W.hat, M.hat, Tau.hat)
+    new_prune_info <- right_leaf$prune_info
+    right_r_loss <- right_leaf$node_r_loss
+    # Then we aggregate the samples and calculace the aggregated r_loss
+    node_samples <- c(new_prune_info[[node$left_child]]$samples, new_prune_info[[node$right_child]]$samples)
+    new_prune_info[[index]]$samples <- node_samples
+    node_r_loss <- r_loss(Y, node_samples, W.orig, W.hat, M.hat, Tau.hat)
+    # Compare the r_losses, and decide whether to prune, then return
+    if (node_r_loss < (left_r_loss + right_r_loss + cost)) {
+      new_prune_info[[index]]$is_pruned_leaf <- TRUE
+      return(list(node_r_loss = node_r_loss, prune_info = new_prune_info))
+    } else {
+      new_prune_info[[index]]$is_pruned_leaf <- FALSE
+      return(list(node_r_loss = left_r_loss + right_r_loss + cost,
+                  prune_info = new_prune_info))
+    }
+  }
+}
+
+
+
+find_best_tree <- function(forest, type = c("regression", "causal"), cost = 0) {
+  best_r_loss <- Inf
+  best_tree <- 0
+  best_prune_info <- list()
+  Y <- forest$Y.orig
+  type <- match.arg(type)
+  if (type == "causal") {
+    W.orig <- forest$W.orig
+    W.hat <- forest$W.hat
+    M.hat <- forest$Y.hat
+    Tau.hat <- forest$predictions
+  }
+  nt <- forest$'_num_trees'
+  nt <- floor(nt/20)
+  for (t in 1:forest$'_num_trees') {
+    if (t%%nt == 0) cat("tree:", t, "\n")
+    t_tree <- grf::get_tree(forest, t)
+    prune_info <- rep(list(list(is_pruned_leaf = FALSE, samples = c())),
+                      length(t_tree$nodes))
+    if (type == "regression") {
+      t_tree <- get_r_loss(Y, t_tree, 1, cost, prune_info)
+    } else {
+      t_tree <- get_r_loss(Y, t_tree, 1, cost, prune_info, W.orig, W.hat, M.hat, Tau.hat)
+    }
+    if (t_tree$node_r_loss < best_r_loss) {
+      best_r_loss <- t_tree$node_r_loss
+      best_tree <- t
+      best_prune_info <- t_tree$prune_info
+    }
+  }
+  return(list(best_tree = best_tree, best_r_loss = best_r_loss, best_prune_info = best_prune_info))
+}
+best_tree_info <- find_best_tree(cforest)
+idx_best_tree <- best_tree_info$best_tree
+best_tree<- get_tree(cforest, idx_best_tree)
+plot(best_tree)
+
+
+
+```
+```{r}
+attributes(best_tree)
+attr(best_tree, "nodes")
+best_tree_info
+```
+
+
+```{r}
+cat("Outcome variable:\n", "grade_for_session_7", "\n\n")
+cat("Treatment Groups:\n", toString(unique(summary_data$arm_name)), "\n\n")
+cat("Covariates:\n")
+covariates
+cat("\nResults:\n")
+cforest
+```
+
+
+```{r}
+# Predict contrasts (out-of-bag) using the forest.
+# Fitting several outcomes jointly is supported, and the returned prediction array has
+# dimension [num.samples, num.contrasts, num.outcomes]. Since num.outcomes is one in
+# this example, we use drop = TRUE to ignore this singleton dimension.
+mc.pred <- predict(cforest, drop = TRUE)
+
+# By default, the first ordinal treatment is used as baseline ("A" in this example),
+# giving two contrasts tau_B = Y(B) - Y(A), tau_C = Y(C) - Y(A)
+tau.hat <- mc.pred$predictions
+
+hist(tau.hat, xlim= c(-0.2, -0.1), breaks=100)
+
+```
+```{r}
+write.csv(summary_data, file = 'summary_data.csv', row.names = FALSE)
+```
+
+```{r}
+library(dplyr)
+library(grf)
+
+analyze_outcomes_with_treatments <- function(data, outcomes, treatments, covariate_names) {
+  results <- list()
+  
+  for(outcome_def in outcomes) {
+    # Dynamically calculate the outcome variable based on the provided expression
+    data$Y <- eval(parse(text = outcome_def$calculate), envir = data)
+    
+    # Loop through each treatment group
+    for(treatment in treatments) {
+      # Create a binary treatment variable based on the treatment groups
+      data_filtered <- data %>%
+        mutate(arm_binary = case_when(
+          arm_name == "Control" ~ 0,
+          arm_name == treatment ~ 1,
+          TRUE ~ NA_integer_
+        )) %>%
+        filter(!is.na(arm_binary)) # Ensuring that we only include valid cases
+      
+      # Ensure the treatment variable W is a numeric vector
+      W_numeric <- as.numeric(as.character(data_filtered$arm_binary))
+      
+      # Correctly subset covariates from the filtered data
+      X <- as.matrix(data_filtered[covariate_names])
+      
+      # Fit the causal forest model
+      cforest <- causal_forest(X, data_filtered$Y, W_numeric)
+      
+      # TODO
+      treatment_effects <- predict(cforest)$predictions
+      # print(treatment_effects)
+      
+      best_tree_info <- find_best_tree(cforest)
+      idx_best_tree <- best_tree_info$best_tree
+      best_tree <- get_tree(cforest, idx_best_tree)
+      
+      # TODO: this doesn't work
+      best_tree <- annotate_tree_with_cate(best_tree, treatment_effects, data_filtered)
+      
+      # Store the results, including the best tree and its index
+      results[[paste(outcome_def$name, treatment, sep = " - ")]] <- list(model = cforest, best_tree = best_tree, idx_best_tree = idx_best_tree)
+      
+      # Plotting the best tree (assuming your get_tree function returns something plottable)
+      plot(best_tree)
+    }
+  }
+  
+  return(results)
+}
+
+# TODO
+annotate_tree_with_cate <- function(tree, cate, data) {
+  # Example assuming tree is a list of nodes
+  # This function traverses the tree and adds CATE to each node
+  for (node in tree$nodes) {
+    node_data <- data[node$data_indices, ]
+    node_cate <- mean(cate[node$data_indices])
+    node$cate <- node_cate
+  }
+  return(tree)
+}
+
+# Define your outcomes correctly with calculation expressions as strings
+outcomes <- list(
+  list(name = "Uptake Difference", calculate = "uptake_session_7 - uptake_session_1"),
+  list(name = "Grade Improvement", calculate = "grade_for_session_7 - grade_for_session_1"),
+  list(name = "Eliciting Improvement", calculate = "normalized_num_eliciting_7 - normalized_num_eliciting_1")
+)
+
+# Make sure you define your covariate_names correctly based on the list you provided earlier
+covariate_names <- c("average_attendance", "average_rating", "average_session_duration", "average_talktime_tutor_pct", "average_spoken_token_tutor_pct", "average_chat_token_tutor_pct", "average_length_utterance_tutor", "average_length_utterance_student", "average_length_utterance_tutor_chat", "average_length_utterance_student_chat", "average_ratio_students_engaged", "average_normalized_num_student_names_used", "average_normalized_num_turns", "average_normalized_num_high_uptakes", "average_normalized_num_eliciting", "average_normalized_num_questions_students", "average_normalized_num_questions_tutor", "average_normalized_student_reasoning", "count_acknowledged", "count_reflection_share", "count_is_reflected", "min_sat_score_series", "max_sat_score_series", "average_uptake", "grade_for_session_1", "grade_for_session_2", "grade_for_session_3", "grade_for_session_4", "grade_for_session_7")
+
+treatments <- c("Control", "Tutor Feedback", "Tutor Feedback + Goal-Oriented Learner Feedback", "Tutor Feedback + Socially-Oriented Learner Feedback", "Tutor Feedback - Exclude", "Tutor Feedback - Exclude (Full)")
+
+# Then you can call your function with the correct parameters
+results <- analyze_outcomes_with_treatments(summary_data, outcomes, treatments, covariate_names)
+```
+
+
+```{r}
+print(summary_data)
+```
+```{r}
+print(covariate_names)
+
+```
+```{r}
+result_name <- names(results)[9]
+best_tree <- results[[result_name]]$best_tree
+
+cat(result_name)
+plot(best_tree)
+
+```
