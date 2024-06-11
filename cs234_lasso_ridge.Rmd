@@ -14,7 +14,7 @@ This is an R Markdown document. Markdown is a simple formatting syntax for autho
 When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
 ```{r cars}
-df <- read.csv("summary_data_final.csv", header = T)
+df <- read.csv("may_summary_data.csv", header = T)
 #df
 ```
 
@@ -51,6 +51,8 @@ print(comma_separated_list)
 ```
 
 ```{r}
+
+
 control = df[df$arm_name == "Control",]
 test_control = nrow(control) - as.integer(nrow(control) * 0.7)
 last_control = tail(control, n = test_control) 
@@ -81,23 +83,30 @@ total
 You can also embed plots, for example:
 
 ```{r pressure, echo=FALSE}
+df <- read.csv("may_summary_data.csv", header = T)
+
 df = df[df$arm_name == "Tutor Feedback + Goal-Oriented Learner Feedback",]
 df
 
 train_num = as.integer(nrow(df) * 0.7)
 test_num = nrow(df) - train_num
 ```
+```{r}
+train <- read.csv("full_data_splits/tutor_social_train_data.csv", header=T)
+```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
 ```{r}
-train_df = df[1:train_num, ]
-train_df
+#train_df = df[1:train_num, ]
+#train_df
 
-attach(train_df)
+#attach(train_df)
 
-X = cbind(attendance_1, rating_1, talktime_tutor_pct_1, spoken_token_tutor_pct_1, chat_token_tutor_pct_1, length_utterance_tutor_1, length_utterance_student_1, length_utterance_tutor_chat_1, length_utterance_student_chat_1, ratio_students_engaged_1, normalized_num_student_names_used_1, normalized_num_turns_1, normalized_num_high_uptakes_1, normalized_num_eliciting_1, normalized_num_questions_students_1, normalized_num_questions_tutor_1, normalized_student_reasoning_1, min_sat_score_series, max_sat_score_series, grade_for_session_1)
+attach(train)
 
-uptake.lm = lm(talktime_change ~ X, train_df)
+X = cbind(attendance_1, rating_1, talktime_tutor_pct_1, spoken_token_tutor_pct_1, chat_token_tutor_pct_1, length_utterance_tutor_1, length_utterance_student_1, length_utterance_tutor_chat_1, length_utterance_student_chat_1, ratio_students_engaged_1, normalized_num_turns_1, normalized_num_high_uptakes_1, normalized_num_eliciting_1, normalized_num_questions_students_1, normalized_num_questions_tutor_1, normalized_student_reasoning_1, min_sat_score_series, max_sat_score_series, grade_for_session_1)
+
+uptake.lm = lm(uptake_change ~ X, train)
 summary(uptake.lm)
 
 library(MASS)
@@ -106,7 +115,7 @@ library(MASS)
 Xp = scale(X,TRUE,TRUE) # center and standardize columns of X
 
 lambda = 10^(-seq(-3, 8, 0.05)) # values of lambda at which to try ridge
-ridge.lms = lm.ridge(talktime_change ~ Xp, lambda = lambda)
+ridge.lms = lm.ridge(uptake_change ~ Xp, lambda = lambda)
 
 # GCV
 plot(log10(lambda),ridge.lms$GCV, ylab = "GCV estimate")

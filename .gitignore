@@ -1,0 +1,13 @@
+full_data_splits/
+
+*.csv
+
+*.pth
+
+*.png
+
+Training *
+
+*.txt
+
+.DS_Store
